@@ -1,0 +1,62 @@
+{
+  "name": "@indexing-co/cli",
+  "version": "0.1.0",
+  "description": "Primary CLI for Indexing Co — manage blockchain data pipelines, filters, transformations, and live event streams from your terminal or AI coding agent.",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/indexing-co/indexing-co-cli.git"
+  },
+  "homepage": "https://www.indexing.co",
+  "bugs": {
+    "url": "https://github.com/indexing-co/indexing-co-cli/issues"
+  },
+  "keywords": [
+    "blockchain",
+    "data",
+    "pipelines",
+    "indexing",
+    "evm",
+    "ethereum",
+    "agents",
+    "cli"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "indexing-co": "dist/bin/indexing-co.js",
+    "ico": "dist/bin/indexing-co.js"
+  },
+  "files": [
+    "dist/bin",
+    "dist/commands",
+    "dist/lib",
+    "dist/index.js",
+    "dist/index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "npm run typecheck",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "test:integration": "npm run build && node --test dist/test/integration.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  }
+}
