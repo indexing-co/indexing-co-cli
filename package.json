@@ -1,6 +1,6 @@
 {
   "name": "@indexing-co/cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Primary CLI for Indexing Co — manage blockchain data pipelines, filters, transformations, and live event streams from your terminal or AI coding agent.",
   "type": "commonjs",
   "main": "dist/index.js",
