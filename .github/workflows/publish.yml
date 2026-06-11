@@ -1,0 +1,65 @@
+name: Publish Package
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing (OIDC) requires npm >= 11.5.1
+      - name: Update npm
+        run: npm install -g npm@latest
+
+      - run: npm ci
+
+      - run: npm test
+
+      - name: Check for manual version bump
+        id: version-check
+        run: |
+          CURR=$(node -p "require('./package.json').version")
+          PREV=$(git show HEAD~1:package.json 2>/dev/null | grep '"version"' | head -1 | sed 's/.*"version": *"\([^"]*\)".*/\1/')
+          if [ -n "$PREV" ] && [ "$CURR" != "$PREV" ]; then
+            echo "skip_bump=true" >> $GITHUB_OUTPUT
+            echo "Version manually changed: $PREV → $CURR, skipping auto-bump"
+          else
+            echo "skip_bump=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Bump Version
+        if: steps.version-check.outputs.skip_bump != 'true'
+        run: npm version patch --no-git-tag-version
+
+      - name: Commit and Push Changes
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add package.json package-lock.json
+          git commit -m "Auto-update package version [skip ci]" || echo "No changes to commit"
+          git push origin main || echo "No changes to push"
+
+      - name: Publish @indexing-co/cli
+        run: npm publish --access public --tag latest
+
+      # The same package is also published as @indexing/cli (alongside
+      # @indexing/jiti). Only the name differs; the tarball is identical.
+      - name: Publish @indexing/cli
+        run: |
+          npm pkg set name=@indexing/cli
+          npm publish --access public --tag latest
