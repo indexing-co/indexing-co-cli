@@ -15,6 +15,7 @@ import {
   type ConsoleStateEvent,
 } from "../lib/console-state";
 import { CliError, EXIT_CODES } from "../lib/errors";
+import { computeKeyIdentity } from "../lib/key-fingerprint";
 import { type ApiResponse, type RequestSpec } from "../lib/http";
 import { type CommandDefinition, type CommandContext, getCompletionSuggestions } from "../lib/runtime";
 import { loadState, recordStreamSession } from "../lib/state";
@@ -151,6 +152,7 @@ async function recordAgentActivity(
     sessionId: context.options.session ? String(context.options.session) : undefined,
     consoleUrl: context.options.consoleUrl ? String(context.options.consoleUrl) : context.env.INDEXING_CO_CONSOLE_URL,
     source: context.options.source ? String(context.options.source) : undefined,
+    apiKey: context.config.apiKey,
     env: context.env,
     fetchImpl: context.fetchImpl,
   });
@@ -1064,7 +1066,34 @@ order by ordinal_position
               apiKey: maskSecret(context.config.apiKey),
               source: context.config.apiKeySource || "not configured",
               baseUrl: context.config.baseUrl,
+              keyFingerprint: context.config.apiKey
+                ? computeKeyIdentity(context.config.apiKey)
+                : "not configured",
             }),
+        },
+        {
+          name: "whoami",
+          summary: "Show which API key is active, as a fingerprint (sha256/16).",
+          requiresAuth: false,
+          execute: async (context) => {
+            if (!context.config.apiKey) {
+              return renderRecord("Active credential", {
+                keyFingerprint: "not configured",
+                source: "not configured",
+                credentialsPath: context.config.credentialsPath,
+                hint: `Run "indexing-co auth login", set INDEXING_CO_API_KEY, or pass --api-key.`,
+              });
+            }
+            // sha256/16 of the key — stable, local-display-only identifier so
+            // two machines (or the console account) can be compared by eye.
+            // The raw key is never printed; wire payloads use the per-session
+            // HMAC fingerprint instead (src/lib/key-fingerprint.ts).
+            return renderRecord("Active credential", {
+              keyFingerprint: computeKeyIdentity(context.config.apiKey),
+              source: context.config.apiKeySource,
+              credentialsPath: context.config.credentialsPath,
+            });
+          },
         },
         {
           name: "logout",
@@ -1130,6 +1159,7 @@ order by ordinal_position
                 sessionId,
                 consoleUrl,
                 source,
+                apiKey: context.config.apiKey,
                 fetchImpl: context.fetchImpl,
                 onEvent: (event) => {
                   if (context.format === "json") {

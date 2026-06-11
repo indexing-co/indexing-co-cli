@@ -3,6 +3,7 @@ const crypto = require("node:crypto");
 
 import { DEFAULT_CONSOLE_URL, DEFAULT_HTTP_TIMEOUT_MS, DEFAULT_UPDATE_TIMEOUT_MS, getSessionIdPath } from "./constants";
 import { CliError, EXIT_CODES } from "./errors";
+import { computeKeyFingerprint } from "./key-fingerprint";
 
 export interface ConsoleStateSnapshot {
   route?: string;
@@ -23,6 +24,10 @@ export interface ConsoleStateSubscriptionOptions {
   sessionId: string;
   consoleUrl?: string;
   source?: string;
+  // COR-1796: engine API key used to derive the per-session key fingerprint
+  // sent with presence heartbeats. The raw key itself never leaves this
+  // process — see src/lib/key-fingerprint.ts.
+  apiKey?: string;
   onEvent: (event: ConsoleStateEvent) => void;
   onTransportError?: (error: Error, context: { attempt: number; reconnectInMs: number }) => void;
   fetchImpl?: typeof fetch;
@@ -64,6 +69,9 @@ export interface AgentActivityReportOptions extends AgentActivityEventInput {
   sessionId?: string;
   consoleUrl?: string;
   source?: string;
+  // COR-1796: engine API key used to derive the per-session key fingerprint
+  // attached to the event. Raw key never serialized.
+  apiKey?: string;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
@@ -108,6 +116,7 @@ type SharedConnection = {
   fetchImpl: typeof fetch;
   heartbeatInterval: ReturnType<typeof setInterval> | null;
   key: string;
+  keyFingerprint: string | null;
   sessionId: string;
   source: string;
   stopped: boolean;
@@ -161,7 +170,10 @@ async function sendPresenceHeartbeat(connection: SharedConnection, signal?: Abor
         "Content-Type": "application/json",
         "X-Session-Id": connection.sessionId,
       },
-      body: JSON.stringify({ source: connection.source }),
+      body: JSON.stringify({
+        source: connection.source,
+        ...(connection.keyFingerprint ? { keyFingerprint: connection.keyFingerprint } : {}),
+      }),
       signal,
     });
   } catch {
@@ -449,6 +461,9 @@ export async function reportAgentActivity(options: AgentActivityReportOptions): 
     actor: "agent",
     type: options.type,
     target: options.target,
+    ...(options.apiKey
+      ? { keyFingerprint: computeKeyFingerprint(options.apiKey, sessionId) }
+      : {}),
     metadata: {
       ...(options.metadata || {}),
       agentName: source,
@@ -561,6 +576,9 @@ export function subscribeConsoleState(options: ConsoleStateSubscriptionOptions):
       fetchImpl: options.fetchImpl || fetch,
       heartbeatInterval: null,
       key,
+      keyFingerprint: options.apiKey
+        ? computeKeyFingerprint(options.apiKey, options.sessionId)
+        : null,
       sessionId: options.sessionId,
       source,
       stopped: false,
