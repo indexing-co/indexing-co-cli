@@ -7,6 +7,7 @@ import {
   getAgentPairingHealth,
   getCurrentUserState,
   reportAgentActivity,
+  requestAccountKeyHandoff,
   resolveAgentSource,
   resolveConsoleSessionId,
   subscribeConsoleState,
@@ -15,6 +16,7 @@ import {
   type ConsoleStateEvent,
 } from "../lib/console-state";
 import { CliError, EXIT_CODES } from "../lib/errors";
+import { computeKeyIdentity } from "../lib/key-fingerprint";
 import { type ApiResponse, type RequestSpec } from "../lib/http";
 import { type CommandDefinition, type CommandContext, getCompletionSuggestions } from "../lib/runtime";
 import { loadState, recordStreamSession } from "../lib/state";
@@ -151,6 +153,7 @@ async function recordAgentActivity(
     sessionId: context.options.session ? String(context.options.session) : undefined,
     consoleUrl: context.options.consoleUrl ? String(context.options.consoleUrl) : context.env.INDEXING_CO_CONSOLE_URL,
     source: context.options.source ? String(context.options.source) : undefined,
+    apiKey: context.config.apiKey,
     env: context.env,
     fetchImpl: context.fetchImpl,
   });
@@ -1064,7 +1067,88 @@ order by ordinal_position
               apiKey: maskSecret(context.config.apiKey),
               source: context.config.apiKeySource || "not configured",
               baseUrl: context.config.baseUrl,
+              keyFingerprint: context.config.apiKey
+                ? computeKeyIdentity(context.config.apiKey)
+                : "not configured",
             }),
+        },
+        {
+          name: "whoami",
+          summary: "Show which API key is active, as a fingerprint (sha256/16).",
+          requiresAuth: false,
+          execute: async (context) => {
+            if (!context.config.apiKey) {
+              return renderRecord("Active credential", {
+                keyFingerprint: "not configured",
+                source: "not configured",
+                credentialsPath: context.config.credentialsPath,
+                hint: `Run "indexing-co auth login", set INDEXING_CO_API_KEY, or pass --api-key.`,
+              });
+            }
+            // sha256/16 of the key — stable, local-display-only identifier so
+            // two machines (or the console account) can be compared by eye.
+            // The raw key is never printed; wire payloads use the per-session
+            // HMAC fingerprint instead (src/lib/key-fingerprint.ts).
+            return renderRecord("Active credential", {
+              keyFingerprint: computeKeyIdentity(context.config.apiKey),
+              source: context.config.apiKeySource,
+              credentialsPath: context.config.credentialsPath,
+            });
+          },
+        },
+        {
+          name: "request-key",
+          summary: "Request this console account's API key via in-console approval.",
+          requiresAuth: false,
+          options: [
+            { name: "session", description: "Explicit console session id.", type: "string" },
+            { name: "console-url", description: "Override the console base URL.", type: "string" },
+            { name: "source", description: "Agent name shown in the approval prompt.", type: "string" },
+          ],
+          execute: async (context) => {
+            const sessionId = resolveConsoleSessionId(context.options.session as string | undefined, context.env);
+            const consoleUrl = (context.options.consoleUrl as string | undefined) || context.env.INDEXING_CO_CONSOLE_URL;
+            const source = resolveAgentSource(context.options.source as string | undefined, context.env);
+
+            context.stderr.write(
+              "Requested this account's API key. Approve the prompt in the console's Agent panel…\n",
+            );
+
+            const result = await requestAccountKeyHandoff({
+              sessionId,
+              consoleUrl,
+              source,
+              fetchImpl: context.fetchImpl,
+              onStatus: (status) => {
+                if (status === "pending") {
+                  context.stderr.write("Waiting for approval…\n");
+                }
+              },
+            });
+
+            if (result.status !== "approved" || !result.apiKey) {
+              const hints: Record<string, string> = {
+                denied: "The request was denied in the console.",
+                expired: "The approval expired before the key was collected. Run the command again and approve promptly.",
+                consumed: "The grant was already collected — possibly by another process. Approve a fresh request.",
+                timeout: "No approval arrived in time. Keep the console open and run the command again.",
+              };
+              throw new CliError(
+                `Key handoff not completed (${result.status}).`,
+                EXIT_CODES.AUTH,
+                { hint: hints[result.status] },
+              );
+            }
+
+            ensureConfigDirectory(context.env);
+            const credentialsPath = writeCredentialsFile(result.apiKey, context.config.credentialsPath);
+            return renderRecord("Credentials saved via console approval", {
+              saved: true,
+              source: "console-pairing",
+              credentialsPath,
+              keyFingerprint: computeKeyIdentity(result.apiKey),
+            });
+          },
         },
         {
           name: "logout",
@@ -1130,6 +1214,7 @@ order by ordinal_position
                 sessionId,
                 consoleUrl,
                 source,
+                apiKey: context.config.apiKey,
                 fetchImpl: context.fetchImpl,
                 onEvent: (event) => {
                   if (context.format === "json") {
