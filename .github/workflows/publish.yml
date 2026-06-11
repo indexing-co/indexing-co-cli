@@ -54,12 +54,5 @@ jobs:
           git commit -m "Auto-update package version [skip ci]" || echo "No changes to commit"
           git push origin main || echo "No changes to push"
 
-      - name: Publish @indexing-co/cli
-        run: npm publish --access public --tag latest
-
-      # The same package is also published as @indexing/cli (alongside
-      # @indexing/jiti). Only the name differs; the tarball is identical.
       - name: Publish @indexing/cli
-        run: |
-          npm pkg set name=@indexing/cli
-          npm publish --access public --tag latest
+        run: npm publish --access public --tag latest

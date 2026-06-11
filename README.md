@@ -1,4 +1,4 @@
-# @indexing-co/cli
+# @indexing/cli
 
 Primary CLI for [Indexing Co](https://www.indexing.co) — manage blockchain data pipelines, filters, transformations, and live event streams from your terminal or AI coding agent.
 
@@ -11,8 +11,8 @@ The MCP server at [indexing-co/indexing-co-mcp](https://github.com/indexing-co/i
 ## Install
 
 ```bash
-npx -y @indexing-co/cli@latest --help
-npm install -g @indexing-co/cli
+npx -y @indexing/cli@latest --help
+npm install -g @indexing/cli
 ```
 
 Temporary fallback until the npm package is public:
@@ -112,7 +112,7 @@ INDEXING_CO_CONSOLE_URL=http://localhost:5173 indexing-co agent watch --session 
 Library usage:
 
 ```ts
-import { getCurrentUserState, subscribeConsoleState } from "@indexing-co/cli";
+import { getCurrentUserState, subscribeConsoleState } from "@indexing/cli";
 
 const subscription = subscribeConsoleState({
   sessionId: "session-id",

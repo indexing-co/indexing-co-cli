@@ -9,7 +9,7 @@ test("staging pipeline list is reachable when INDEXING_CO_STAGING_API_KEY is set
   const client = createHttpClient({
     apiKey,
     baseUrl: process.env.INDEXING_CO_STAGING_BASE_URL || "https://app.indexing.co/dw",
-    userAgent: "@indexing-co/cli/integration-test",
+    userAgent: "@indexing/cli/integration-test",
   });
 
   const response = await client.get("/pipelines");
