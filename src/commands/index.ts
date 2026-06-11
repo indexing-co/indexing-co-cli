@@ -7,6 +7,7 @@ import {
   getAgentPairingHealth,
   getCurrentUserState,
   reportAgentActivity,
+  requestAccountKeyHandoff,
   resolveAgentSource,
   resolveConsoleSessionId,
   subscribeConsoleState,
@@ -1092,6 +1093,60 @@ order by ordinal_position
               keyFingerprint: computeKeyIdentity(context.config.apiKey),
               source: context.config.apiKeySource,
               credentialsPath: context.config.credentialsPath,
+            });
+          },
+        },
+        {
+          name: "request-key",
+          summary: "Request this console account's API key via in-console approval.",
+          requiresAuth: false,
+          options: [
+            { name: "session", description: "Explicit console session id.", type: "string" },
+            { name: "console-url", description: "Override the console base URL.", type: "string" },
+            { name: "source", description: "Agent name shown in the approval prompt.", type: "string" },
+          ],
+          execute: async (context) => {
+            const sessionId = resolveConsoleSessionId(context.options.session as string | undefined, context.env);
+            const consoleUrl = (context.options.consoleUrl as string | undefined) || context.env.INDEXING_CO_CONSOLE_URL;
+            const source = resolveAgentSource(context.options.source as string | undefined, context.env);
+
+            context.stderr.write(
+              "Requested this account's API key. Approve the prompt in the console's Agent panel…\n",
+            );
+
+            const result = await requestAccountKeyHandoff({
+              sessionId,
+              consoleUrl,
+              source,
+              fetchImpl: context.fetchImpl,
+              onStatus: (status) => {
+                if (status === "pending") {
+                  context.stderr.write("Waiting for approval…\n");
+                }
+              },
+            });
+
+            if (result.status !== "approved" || !result.apiKey) {
+              const hints: Record<string, string> = {
+                denied: "The request was denied in the console.",
+                expired: "The approval expired before the key was collected. Run the command again and approve promptly.",
+                consumed: "The grant was already collected — possibly by another process. Approve a fresh request.",
+                timeout: "No approval arrived in time. Keep the console open and run the command again.",
+              };
+              throw new CliError(
+                `Key handoff not completed (${result.status}).`,
+                EXIT_CODES.AUTH,
+                { hint: hints[result.status] },
+              );
+            }
+
+            ensureConfigDirectory(context.env);
+            const credentialsPath = writeCredentialsFile(result.apiKey, context.config.credentialsPath);
+            return renderRecord("Credentials saved via console approval", {
+              saved: true,
+              source: "console-pairing",
+              credentialsPath,
+              keyFingerprint: computeKeyIdentity(result.apiKey),
             });
           },
         },

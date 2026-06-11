@@ -490,6 +490,92 @@ export async function reportAgentActivity(options: AgentActivityReportOptions): 
   }
 }
 
+export interface KeyHandoffOptions {
+  sessionId: string;
+  consoleUrl?: string;
+  source?: string;
+  fetchImpl?: typeof fetch;
+  // Poll cadence/budget — overridable for tests.
+  pollIntervalMs?: number;
+  timeoutMs?: number;
+  onStatus?: (status: string) => void;
+}
+
+export interface KeyHandoffResult {
+  status: "approved" | "denied" | "expired" | "consumed" | "timeout";
+  apiKey?: string;
+}
+
+// COR-1798: ask the console session's signed-in user for the account's
+// engine API key. POST creates the request; the user approves it in the
+// console UI; we poll GET until the one-time grant is released (or the user
+// denies / the grant expires). A presence heartbeat is sent first so the
+// approval prompt appears even when no watcher is running.
+export async function requestAccountKeyHandoff(
+  options: KeyHandoffOptions,
+): Promise<KeyHandoffResult> {
+  const fetchImpl = options.fetchImpl || fetch;
+  const consoleUrl = options.consoleUrl || DEFAULT_CONSOLE_URL;
+  const source = normalizeAgentSource(options.source);
+  const headers = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    "X-Session-Id": options.sessionId,
+  };
+
+  // Best-effort: flip the session to "agent connected" so the BYO panel
+  // renders and the approval prompt is visible.
+  try {
+    await fetchImpl(buildConsoleUrl(consoleUrl, "/api/state/presence"), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ source }),
+    });
+  } catch {
+    // Presence is presentational only — the request below still works.
+  }
+
+  const requested = await fetchImpl(buildConsoleUrl(consoleUrl, "/api/agent/key-request"), {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ source }),
+  });
+  if (!requested.ok) {
+    throw new CliError(
+      `Console rejected the key request (status ${requested.status}).`,
+      EXIT_CODES.NETWORK,
+    );
+  }
+
+  const pollIntervalMs = options.pollIntervalMs ?? 2000;
+  const deadline = Date.now() + (options.timeoutMs ?? 120_000);
+  let lastStatus = "pending";
+
+  while (Date.now() < deadline) {
+    const response = await fetchImpl(buildConsoleUrl(consoleUrl, "/api/agent/key-request"), {
+      method: "GET",
+      headers: { Accept: "application/json", "X-Session-Id": options.sessionId },
+    });
+    if (response.ok) {
+      const payload = (await response.json()) as { status?: string; apiKey?: string };
+      const status = payload.status || "pending";
+      if (status !== lastStatus) {
+        lastStatus = status;
+        options.onStatus?.(status);
+      }
+      if (status === "approved" && typeof payload.apiKey === "string" && payload.apiKey) {
+        return { status: "approved", apiKey: payload.apiKey };
+      }
+      if (status === "denied" || status === "expired" || status === "consumed") {
+        return { status };
+      }
+    }
+    await delay(pollIntervalMs);
+  }
+
+  return { status: "timeout" };
+}
+
 export async function getCurrentUserState(options: {
   sessionId: string;
   consoleUrl?: string;
