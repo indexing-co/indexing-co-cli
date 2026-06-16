@@ -20,6 +20,7 @@ export interface ApiResponse<T = unknown> {
 export interface HttpClientOptions {
   apiKey?: string;
   baseUrl: string;
+  consoleSessionId?: string;
   userAgent: string;
   fetchImpl?: typeof fetch;
 }
@@ -89,6 +90,7 @@ export function createHttpClient(options: HttpClientOptions) {
       Accept: "application/json, text/plain;q=0.9, */*;q=0.8",
       "User-Agent": options.userAgent,
       "X-API-KEY": options.apiKey,
+      "X-Session-Id": options.consoleSessionId,
       ...(spec.headers || {}),
     }) as Record<string, string>;
 

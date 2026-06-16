@@ -2,6 +2,7 @@ const path = require("node:path");
 
 import { resolveApiKey } from "./auth";
 import { DEFAULT_BASE_URL, getCredentialsPath, getStatePath, readPackageMetadata } from "./constants";
+import { resolveOptionalConsoleSessionContext } from "./console-session";
 import { CliError, EXIT_CODES, toCliError } from "./errors";
 import { createHttpClient } from "./http";
 import { renderHumanResult, renderJsonResult, type CommandResult } from "./output";
@@ -74,8 +75,9 @@ const GLOBAL_OPTIONS: OptionDefinition[] = [
   { name: "json", short: "j", description: "Emit structured JSON instead of human-readable output.", type: "boolean" },
   { name: "api-key", description: "Override the API key for this invocation.", type: "string" },
   { name: "base-url", description: "Override the API base URL.", type: "string" },
+  { name: "console-session", description: "Console session id for activity reporting.", type: "string" },
+  { name: "console-url", description: "Console URL for activity reporting.", type: "string" },
   { name: "session", description: "Console session id for activity reporting.", type: "string", hidden: true },
-  { name: "console-url", description: "Console URL for activity reporting.", type: "string", hidden: true },
   { name: "source", description: "Agent source for activity reporting.", type: "string", hidden: true },
   { name: "no-update-check", description: "Skip the npm version check banner.", type: "boolean" },
   { name: "version", short: "v", description: "Show the CLI version.", type: "boolean" },
@@ -405,6 +407,15 @@ function buildContext(
   const credentialsPath = getCredentialsPath(env);
   const statePath = getStatePath(env);
   const baseUrl = String(parsed.options.baseUrl || env.INDEXING_CO_BASE_URL || DEFAULT_BASE_URL);
+  const consoleSession = resolveOptionalConsoleSessionContext({
+    explicitSessionId: parsed.options.consoleSession || parsed.options.session
+      ? String(parsed.options.consoleSession || parsed.options.session)
+      : undefined,
+    explicitConsoleUrl: parsed.options.consoleUrl ? String(parsed.options.consoleUrl) : undefined,
+    explicitSource: parsed.options.source ? String(parsed.options.source) : undefined,
+    cwd,
+    env,
+  });
   const credential = resolveApiKey({
     apiKeyFlag: parsed.options.apiKey ? String(parsed.options.apiKey) : undefined,
     env,
@@ -435,6 +446,7 @@ function buildContext(
     http: createHttpClient({
       apiKey: credential.apiKey,
       baseUrl,
+      consoleSessionId: consoleSession.sessionId,
       userAgent: `${packageMetadata.name}/${packageMetadata.version}`,
       fetchImpl: options.fetchImpl,
     }),

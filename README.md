@@ -91,22 +91,30 @@ indexing-co agent doctor --session <id>
 
 Resolution order for the session id:
 
-1. `--session`
-2. `INDEXING_CO_SESSION_ID`
-3. `~/.indexing-co/session-id`
+1. `--console-session` or legacy `--session`
+2. `INDEXING_CO_CONSOLE_SESSION_ID` or legacy `INDEXING_CO_SESSION_ID`
+3. Active session file written by `indexing-co agent watch` for the current project directory
+4. Legacy `~/.indexing-co/session-id`
 
 Console URL resolution order:
 
 1. `--console-url`
 2. `INDEXING_CO_CONSOLE_URL`
-3. `https://console.indexing.co`
+3. Active session file written by `indexing-co agent watch` for the current project directory
+4. `https://console.indexing.co`
+
+`agent watch` maintains Console presence and refreshes an expiring scoped session file under
+`~/.indexing-co/console-sessions/`. Later mutating commands run from the same project directory
+automatically reuse that session for Console activity reporting and attach `X-Session-Id` to API
+requests, giving the API a canonical hook for server-side rail events. If the API mutation succeeds
+but Console activity sync fails, the CLI prints a warning while still returning the mutation result.
 
 For staging or local development, pass an explicit override:
 
 ```bash
-indexing-co agent watch --session <id> --console-url https://staging.console.indexing.co
-indexing-co agent doctor --session <id> --console-url https://staging.console.indexing.co --json
-INDEXING_CO_CONSOLE_URL=http://localhost:5173 indexing-co agent watch --session <id>
+indexing-co agent watch --console-session <id> --console-url https://staging.console.indexing.co
+indexing-co agent doctor --console-session <id> --console-url https://staging.console.indexing.co --json
+INDEXING_CO_CONSOLE_URL=http://localhost:5173 indexing-co agent watch --console-session <id>
 ```
 
 Library usage:
