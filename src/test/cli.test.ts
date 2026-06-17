@@ -529,6 +529,153 @@ test("mutation activity sync failure warns without failing the mutation", async 
   assert.match(stderr.read(), /Console activity sync failed/);
 });
 
+test("require-console-log fails activity commands before mutation when no session exists", async () => {
+  const stdout = createWriter();
+  const stderr = createWriter();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "ico-home-"));
+  const requests: string[] = [];
+
+  const exitCode = await runCli(createRootCommand(), [
+    "filter",
+    "create",
+    "demo_filter",
+    "--values",
+    "0xabc",
+    "--require-console-log",
+  ], {
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    env: {
+      HOME: home,
+      INDEXING_CO_API_KEY: "test-key",
+    },
+    fetchImpl: async (input) => {
+      requests.push(String(input));
+      throw new Error(`Unexpected request: ${input}`);
+    },
+  });
+
+  assert.equal(exitCode, 2);
+  assert.deepEqual(requests, []);
+  assert.match(stderr.read(), /Console activity logging is required/);
+});
+
+test("require-console-log fails when mutation succeeds but activity sync fails", async () => {
+  const stdout = createWriter();
+  const stderr = createWriter();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "ico-home-"));
+  const requests: string[] = [];
+
+  const exitCode = await runCli(createRootCommand(), [
+    "filter",
+    "create",
+    "demo_filter",
+    "--values",
+    "0xabc",
+    "--require-console-log",
+  ], {
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    env: {
+      HOME: home,
+      INDEXING_CO_API_KEY: "test-key",
+      INDEXING_CO_CONSOLE_SESSION_ID: "55555555-5555-4555-8555-555555555555",
+    },
+    fetchImpl: async (input) => {
+      const url = String(input);
+      requests.push(url);
+      if (url === "https://app.indexing.co/dw/filters/demo_filter") {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      if (url === "https://console.indexing.co/api/session/event") {
+        return new Response(JSON.stringify({ ok: false }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+
+  assert.equal(exitCode, 4);
+  assert.equal(requests[0], "https://app.indexing.co/dw/filters/demo_filter");
+  assert.equal(requests[1], "https://console.indexing.co/api/session/event");
+  assert.ok(requests.includes("https://console.indexing.co/api/agent/events/current"));
+  assert.match(stderr.read(), /Console activity sync failed; the API mutation already succeeded/);
+});
+
+test("require-console-log accepts matching server-side activity when supplemental sync fails", async () => {
+  const stdout = createWriter();
+  const stderr = createWriter();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "ico-home-"));
+  const requests: string[] = [];
+
+  const exitCode = await runCli(createRootCommand(), [
+    "filter",
+    "create",
+    "demo_filter",
+    "--values",
+    "0xabc",
+    "--require-console-log",
+  ], {
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    env: {
+      HOME: home,
+      INDEXING_CO_API_KEY: "test-key",
+      INDEXING_CO_CONSOLE_SESSION_ID: "66666666-6666-4666-8666-666666666666",
+    },
+    fetchImpl: async (input) => {
+      const url = String(input);
+      requests.push(url);
+      if (url === "https://app.indexing.co/dw/filters/demo_filter") {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      if (url === "https://console.indexing.co/api/session/event") {
+        return new Response(JSON.stringify({ ok: false }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      if (url === "https://console.indexing.co/api/agent/events/current") {
+        return new Response(JSON.stringify({
+          agentEvents: [
+            {
+              type: "create_filter",
+              target: { id: "demo_filter", name: "demo_filter", type: "filter" },
+            },
+          ],
+          agentProposals: [],
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.match(stdout.read(), /Filter demo_filter saved/);
+  assert.equal(stderr.read(), "");
+  assert.deepEqual(requests, [
+    "https://app.indexing.co/dw/filters/demo_filter",
+    "https://console.indexing.co/api/session/event",
+    "https://console.indexing.co/api/agent/events/current",
+  ]);
+});
+
 test("hint emit sends the resolved console session header", async () => {
   const stdout = createWriter();
   const stderr = createWriter();

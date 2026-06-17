@@ -6,6 +6,7 @@ import { readActiveConsoleSession } from "../lib/console-session";
 import { DEFAULT_BASE_URL, DEFAULT_CONSOLE_URL } from "../lib/constants";
 import {
   getAgentPairingHealth,
+  getAgentEventsSnapshot,
   getCurrentUserState,
   reportAgentActivity,
   requestAccountKeyHandoff,
@@ -82,6 +83,58 @@ function optionValues(context: CommandContext, key: string): string[] {
 function readCodeFromOption(context: CommandContext): string {
   const filePath = requireOption(context, "code");
   return readTextFile(resolveFilePath(context.cwd, filePath));
+}
+
+function isTruthyEnv(value: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
+}
+
+function isConsoleLogRequired(context: CommandContext): boolean {
+  return Boolean(context.options.requireConsoleLog) || isTruthyEnv(context.env.INDEXING_CO_REQUIRE_CONSOLE_LOG);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function activityMatches(event: unknown, expected: AgentActivityEventInput): boolean {
+  if (!event || typeof event !== "object") {
+    return false;
+  }
+
+  const record = event as Record<string, unknown>;
+  const target = record.target as Record<string, unknown> | undefined;
+  return record.type === expected.type &&
+    target?.id === expected.target.id &&
+    target?.type === expected.target.type;
+}
+
+async function hasConsoleActivityEvent(
+  context: CommandContext,
+  event: AgentActivityEventInput,
+  sessionId: string,
+): Promise<boolean> {
+  const consoleUrl = resolveConsoleUrl(context) || DEFAULT_CONSOLE_URL;
+  for (const waitMs of [0, 250, 750, 1500]) {
+    if (waitMs > 0) {
+      await delay(waitMs);
+    }
+
+    try {
+      const snapshot = await getAgentEventsSnapshot({
+        sessionId,
+        consoleUrl,
+        fetchImpl: context.fetchImpl,
+      });
+      if (Array.isArray(snapshot.agentEvents) && snapshot.agentEvents.some((entry) => activityMatches(entry, event))) {
+        return true;
+      }
+    } catch {
+      // Strict mode falls through to the sync failure if the feed cannot be read.
+    }
+  }
+
+  return false;
 }
 
 function readCodeFormDataFromOption(context: CommandContext): FormData {
@@ -164,6 +217,12 @@ async function recordAgentActivity(
     env: context.env,
     fetchImpl: context.fetchImpl,
   });
+  if (!reported && isConsoleLogRequired(context)) {
+    if (resolvedSessionId && await hasConsoleActivityEvent(context, event, resolvedSessionId)) {
+      return;
+    }
+    throw new CliError("Console activity sync failed; the API mutation already succeeded.", EXIT_CODES.NETWORK);
+  }
   if (resolvedSessionId && !reported) {
     context.stderr.write("Warning: Console activity sync failed; the API mutation already succeeded.\n");
   }
@@ -422,6 +481,7 @@ export function createRootCommand(): CommandDefinition {
           name: "create",
           summary: "Create or update a pipeline.",
           args: [{ name: "name", required: true }],
+          reportsActivity: true,
           options: [
             { name: "from-config", description: "Read the full pipeline payload from a JSON file.", type: "string" },
             { name: "filter", description: "Filter name.", type: "string" },
@@ -485,6 +545,7 @@ export function createRootCommand(): CommandDefinition {
           name: "delete",
           summary: "Disable a pipeline.",
           args: [{ name: "name", required: true }],
+          reportsActivity: true,
           examples: ["indexing-co pipeline delete my-pipeline"],
           execute: async (context) => {
             const response = await context.http.delete(`/pipelines/${encodeURIComponent(context.args[0])}`);
@@ -499,6 +560,7 @@ export function createRootCommand(): CommandDefinition {
           name: "backfill",
           summary: "Backfill a pipeline over a block range.",
           args: [{ name: "name", required: true }],
+          reportsActivity: true,
           options: [
             { name: "network", description: "Network key to backfill.", type: "string" },
             { name: "value", description: "Optional filter value.", type: "string" },
@@ -544,6 +606,7 @@ export function createRootCommand(): CommandDefinition {
               name: "add",
               summary: "Enable one or more networks on a pipeline.",
               args: [{ name: "name", required: true }, { name: "network", required: true, variadic: true }],
+              reportsActivity: true,
               execute: async (context) => {
                 const response = await context.http.post(`/pipelines/${encodeURIComponent(context.args[0])}/networks`, {
                   networks: context.args.slice(1),
@@ -560,6 +623,7 @@ export function createRootCommand(): CommandDefinition {
               name: "remove",
               summary: "Disable one or more networks on a pipeline.",
               args: [{ name: "name", required: true }, { name: "network", required: true, variadic: true }],
+              reportsActivity: true,
               execute: async (context) => {
                 const response = await requestFallback(context, [
                   {
@@ -624,6 +688,7 @@ export function createRootCommand(): CommandDefinition {
           name: "create",
           summary: "Create a filter and optionally seed values.",
           args: [{ name: "name", required: true }],
+          reportsActivity: true,
           options: [{ name: "values", description: "One or more filter values.", type: "string", multiple: true }],
           execute: async (context) => {
             const values = optionValues(context, "values");
@@ -642,6 +707,7 @@ export function createRootCommand(): CommandDefinition {
           name: "add",
           summary: "Add a value to a filter.",
           args: [{ name: "name", required: true }, { name: "value", required: true }],
+          reportsActivity: true,
           execute: async (context) => {
             const response = await context.http.post(`/filters/${encodeURIComponent(context.args[0])}`, {
               values: [context.args[1]],
@@ -658,6 +724,7 @@ export function createRootCommand(): CommandDefinition {
           name: "remove",
           summary: "Remove a value from a filter.",
           args: [{ name: "name", required: true }, { name: "value", required: true }],
+          reportsActivity: true,
           execute: async (context) => {
             const response = await context.http.delete(`/filters/${encodeURIComponent(context.args[0])}`, {
               values: [context.args[1]],
@@ -700,6 +767,7 @@ export function createRootCommand(): CommandDefinition {
           name: "register",
           summary: "Register or update transformation code.",
           args: [{ name: "name", required: true }],
+          reportsActivity: true,
           options: [{ name: "code", description: "Path to a JavaScript transformation file.", type: "string" }],
           execute: async (context) => {
             const code = readCodeFromOption(context);
@@ -717,6 +785,7 @@ export function createRootCommand(): CommandDefinition {
         {
           name: "test",
           summary: "Test transformation code against a live block.",
+          reportsActivity: true,
           options: [
             { name: "code", description: "Path to a JavaScript transformation file.", type: "string" },
             { name: "network", description: "Network key to test against.", type: "string" },

@@ -108,6 +108,10 @@ Console URL resolution order:
 automatically reuse that session for Console activity reporting and attach `X-Session-Id` to API
 requests, giving the API a canonical hook for server-side rail events. If the API mutation succeeds
 but Console activity sync fails, the CLI prints a warning while still returning the mutation result.
+To enforce that each activity-producing command is visible in the Console rail, pass
+`--require-console-log` or set `INDEXING_CO_REQUIRE_CONSOLE_LOG=1`. In that mode, the CLI fails before
+running the command when no Console session is active, and returns a non-zero exit if the API mutation
+succeeds but the Console activity write fails.
 
 For staging or local development, pass an explicit override:
 

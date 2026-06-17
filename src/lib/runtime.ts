@@ -32,6 +32,7 @@ export interface CommandDefinition {
   children?: CommandDefinition[];
   examples?: string[];
   hidden?: boolean;
+  reportsActivity?: boolean;
   requiresAuth?: boolean;
   execute?: (context: CommandContext) => Promise<CommandResult> | CommandResult;
 }
@@ -77,6 +78,7 @@ const GLOBAL_OPTIONS: OptionDefinition[] = [
   { name: "base-url", description: "Override the API base URL.", type: "string" },
   { name: "console-session", description: "Console session id for activity reporting.", type: "string" },
   { name: "console-url", description: "Console URL for activity reporting.", type: "string" },
+  { name: "require-console-log", description: "Fail activity-producing commands unless the Console activity log is written.", type: "boolean" },
   { name: "session", description: "Console session id for activity reporting.", type: "string", hidden: true },
   { name: "source", description: "Agent source for activity reporting.", type: "string", hidden: true },
   { name: "no-update-check", description: "Skip the npm version check banner.", type: "boolean" },
@@ -85,6 +87,38 @@ const GLOBAL_OPTIONS: OptionDefinition[] = [
 
 function write(stream: { write: (chunk: string) => void }, text: string): void {
   stream.write(text);
+}
+
+function isTruthyEnv(value: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
+}
+
+function isConsoleLogRequired(context: CommandContext): boolean {
+  return Boolean(context.options.requireConsoleLog) || isTruthyEnv(context.env.INDEXING_CO_REQUIRE_CONSOLE_LOG);
+}
+
+function assertConsoleActivitySession(context: CommandContext): void {
+  const session = resolveOptionalConsoleSessionContext({
+    explicitSessionId: context.options.consoleSession || context.options.session
+      ? String(context.options.consoleSession || context.options.session)
+      : undefined,
+    explicitConsoleUrl: context.options.consoleUrl ? String(context.options.consoleUrl) : undefined,
+    explicitSource: context.options.source ? String(context.options.source) : undefined,
+    cwd: context.cwd,
+    env: context.env,
+  });
+
+  if (session.sessionId) {
+    return;
+  }
+
+  throw new CliError(
+    "Console activity logging is required, but no Console session is active.",
+    EXIT_CODES.USAGE,
+    {
+      hint: "Start `indexing-co agent watch --console-session <id>` in this project, pass --console-session, or set INDEXING_CO_CONSOLE_SESSION_ID.",
+    },
+  );
 }
 
 function splitLongOption(token: string): { name: string; inlineValue?: string } {
@@ -511,6 +545,10 @@ export async function runCli(rootCommand: CommandDefinition, argv: string[], opt
     }
 
     const context = buildContext(rootCommand, selection.command, selection.commandPath, mergedParsed, options);
+    if (selection.command.reportsActivity && isConsoleLogRequired(context)) {
+      assertConsoleActivitySession(context);
+    }
+
     const result = await selection.command.execute(context);
     write(context.format === "json" ? stdout : stdout, context.format === "json" ? renderJsonResult(result) : renderHumanResult(result));
 

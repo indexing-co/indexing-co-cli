@@ -593,6 +593,18 @@ export async function getCurrentUserState(options: {
   }) as ConsoleStateSnapshot;
 }
 
+export async function getAgentEventsSnapshot(options: {
+  sessionId: string;
+  consoleUrl?: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<AgentEventsSnapshot> {
+  return await fetchConsoleJson({
+    ...options,
+    pathName: "/api/agent/events/current",
+  }) as AgentEventsSnapshot;
+}
+
 export async function getAgentPairingHealth(options: {
   sessionId: string;
   consoleUrl?: string;
@@ -615,10 +627,7 @@ export async function getAgentPairingHealth(options: {
   }
 
   try {
-    events = await fetchConsoleJson({
-      ...options,
-      pathName: "/api/agent/events/current",
-    }) as AgentEventsSnapshot;
+    events = await getAgentEventsSnapshot(options);
   } catch (error) {
     warnings.push(`Agent activity snapshot unavailable: ${asError(error).message}`);
   }
