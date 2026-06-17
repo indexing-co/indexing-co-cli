@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 import { ensureConfigDirectory, promptForApiKey, removeCredentialsFile, writeCredentialsFile } from "../lib/auth";
+import { readActiveConsoleSession } from "../lib/console-session";
 import { DEFAULT_BASE_URL, DEFAULT_CONSOLE_URL } from "../lib/constants";
 import {
   getAgentPairingHealth,
@@ -10,6 +11,7 @@ import {
   requestAccountKeyHandoff,
   resolveAgentSource,
   resolveConsoleSessionId,
+  resolveOptionalActivitySessionId,
   subscribeConsoleState,
   type AgentPairingHealth,
   type AgentActivityEventInput,
@@ -148,15 +150,28 @@ async function recordAgentActivity(
   context: CommandContext,
   event: AgentActivityEventInput,
 ): Promise<void> {
-  await reportAgentActivity({
+  const explicitSessionId = context.options.consoleSession || context.options.session
+    ? String(context.options.consoleSession || context.options.session)
+    : undefined;
+  const resolvedSessionId = resolveOptionalActivitySessionId(explicitSessionId, context.env, context.cwd);
+  const reported = await reportAgentActivity({
     ...event,
-    sessionId: context.options.session ? String(context.options.session) : undefined,
+    sessionId: explicitSessionId,
     consoleUrl: context.options.consoleUrl ? String(context.options.consoleUrl) : context.env.INDEXING_CO_CONSOLE_URL,
     source: context.options.source ? String(context.options.source) : undefined,
     apiKey: context.config.apiKey,
+    cwd: context.cwd,
     env: context.env,
     fetchImpl: context.fetchImpl,
   });
+  if (resolvedSessionId && !reported) {
+    context.stderr.write("Warning: Console activity sync failed; the API mutation already succeeded.\n");
+  }
+}
+
+function resolveConsoleUrl(context: CommandContext): string | undefined {
+  const activeSession = readActiveConsoleSession({ cwd: context.cwd, env: context.env });
+  return (context.options.consoleUrl as string | undefined) || context.env.INDEXING_CO_CONSOLE_URL || activeSession?.consoleUrl;
 }
 
 async function resolvePipelineTable(context: CommandContext, pipelineName: string): Promise<string> {
@@ -506,6 +521,18 @@ export function createRootCommand(): CommandDefinition {
             }
 
             const response = await context.http.post(`/pipelines/${encodeURIComponent(context.args[0])}/backfill`, body);
+            await recordAgentActivity(context, {
+              type: "update_pipeline",
+              target: { id: context.args[0], name: context.args[0], type: "pipeline" },
+              metadata: compactObject({
+                action: "backfill",
+                network: body.network,
+                value: body.value,
+                beatStart: body.beatStart,
+                beatEnd: body.beatEnd,
+                beatCount: Array.isArray(body.beats) ? body.beats.length : undefined,
+              }),
+            });
             return renderRecord(`Backfill started for ${context.args[0]}`, response.data as Record<string, unknown>);
           },
         },
@@ -1101,13 +1128,18 @@ order by ordinal_position
           summary: "Request this console account's API key via in-console approval.",
           requiresAuth: false,
           options: [
+            { name: "console-session", description: "Explicit console session id.", type: "string" },
             { name: "session", description: "Explicit console session id.", type: "string" },
             { name: "console-url", description: "Override the console base URL.", type: "string" },
             { name: "source", description: "Agent name shown in the approval prompt.", type: "string" },
           ],
           execute: async (context) => {
-            const sessionId = resolveConsoleSessionId(context.options.session as string | undefined, context.env);
-            const consoleUrl = (context.options.consoleUrl as string | undefined) || context.env.INDEXING_CO_CONSOLE_URL;
+            const sessionId = resolveConsoleSessionId(
+              (context.options.consoleSession || context.options.session) as string | undefined,
+              context.env,
+              context.cwd,
+            );
+            const consoleUrl = resolveConsoleUrl(context);
             const source = resolveAgentSource(context.options.source as string | undefined, context.env);
 
             context.stderr.write(
@@ -1191,6 +1223,7 @@ order by ordinal_position
           summary: "Subscribe to the console state stream.",
           requiresAuth: false,
           options: [
+            { name: "console-session", description: "Explicit console session id.", type: "string" },
             { name: "session", description: "Explicit console session id.", type: "string" },
             { name: "console-url", description: "Override the console base URL.", type: "string" },
             { name: "source", description: "Agent source shown in the console presence indicator.", type: "string" },
@@ -1198,8 +1231,12 @@ order by ordinal_position
             { name: "once", description: "Print the next event and exit.", type: "boolean" },
           ],
           execute: async (context) => {
-            const sessionId = resolveConsoleSessionId(context.options.session as string | undefined, context.env);
-            const consoleUrl = (context.options.consoleUrl as string | undefined) || context.env.INDEXING_CO_CONSOLE_URL;
+            const sessionId = resolveConsoleSessionId(
+              (context.options.consoleSession || context.options.session) as string | undefined,
+              context.env,
+              context.cwd,
+            );
+            const consoleUrl = resolveConsoleUrl(context);
             const source = resolveAgentSource(context.options.source as string | undefined, context.env);
             const verbose = Boolean(context.options.verbose);
             const once = Boolean(context.options.once);
@@ -1215,6 +1252,9 @@ order by ordinal_position
                 consoleUrl,
                 source,
                 apiKey: context.config.apiKey,
+                cwd: context.cwd,
+                env: context.env,
+                cliVersion: context.config.packageVersion,
                 fetchImpl: context.fetchImpl,
                 onEvent: (event) => {
                   if (context.format === "json") {
@@ -1254,12 +1294,17 @@ order by ordinal_position
           summary: "Fetch the current console state snapshot.",
           requiresAuth: false,
           options: [
+            { name: "console-session", description: "Explicit console session id.", type: "string" },
             { name: "session", description: "Explicit console session id.", type: "string" },
             { name: "console-url", description: "Override the console base URL.", type: "string" },
           ],
           execute: async (context) => {
-            const sessionId = resolveConsoleSessionId(context.options.session as string | undefined, context.env);
-            const consoleUrl = (context.options.consoleUrl as string | undefined) || context.env.INDEXING_CO_CONSOLE_URL;
+            const sessionId = resolveConsoleSessionId(
+              (context.options.consoleSession || context.options.session) as string | undefined,
+              context.env,
+              context.cwd,
+            );
+            const consoleUrl = resolveConsoleUrl(context);
             const snapshot = await getCurrentUserState({ sessionId, consoleUrl, fetchImpl: context.fetchImpl });
             return {
               data: snapshot,
@@ -1274,12 +1319,17 @@ order by ordinal_position
           summary: "Check whether Console pairing is healthy.",
           requiresAuth: false,
           options: [
+            { name: "console-session", description: "Explicit console session id.", type: "string" },
             { name: "session", description: "Explicit console session id.", type: "string" },
             { name: "console-url", description: "Override the console base URL.", type: "string" },
           ],
           execute: async (context) => {
-            const sessionId = resolveConsoleSessionId(context.options.session as string | undefined, context.env);
-            const consoleUrl = (context.options.consoleUrl as string | undefined) || context.env.INDEXING_CO_CONSOLE_URL;
+            const sessionId = resolveConsoleSessionId(
+              (context.options.consoleSession || context.options.session) as string | undefined,
+              context.env,
+              context.cwd,
+            );
+            const consoleUrl = resolveConsoleUrl(context);
             const health = await getAgentPairingHealth({ sessionId, consoleUrl, fetchImpl: context.fetchImpl });
 
             return {
@@ -1311,6 +1361,7 @@ order by ordinal_position
             { name: "target-kind", description: "Target kind (pipeline | filter | transformation).", type: "string" },
             { name: "target-id", description: "Target identifier within the chosen kind.", type: "string" },
             { name: "field", description: "Specific field on the target.", type: "string" },
+            { name: "console-session", description: "Explicit console session id.", type: "string" },
             { name: "note", description: "Short human note describing what changed (shown in the BYO Agent feed).", type: "string" },
             { name: "ttl-ms", description: "How long the hint should remain visible (ms).", type: "number" },
             { name: "agent", description: "Agent name (e.g. claude-code, codex-cli).", type: "string" },
@@ -1318,10 +1369,16 @@ order by ordinal_position
           ],
           requiresAuth: false,
           execute: async (context: CommandContext) => {
+            const sessionId = resolveOptionalActivitySessionId(
+              (context.options.consoleSession || context.options.session) as string | undefined,
+              context.env,
+              context.cwd,
+            );
+            const consoleUrl = resolveConsoleUrl(context) || DEFAULT_CONSOLE_URL;
             const url =
               (context.options.url as string | undefined) ||
-              process.env.INDEXING_CO_HINTS_URL ||
-              `${DEFAULT_CONSOLE_URL}/api/hints/emit`;
+              context.env.INDEXING_CO_HINTS_URL ||
+              `${consoleUrl.replace(/\/$/, "")}/api/hints/emit`;
             const body: Record<string, unknown> = {
               type: context.args[0],
               ts: new Date().toISOString(),
@@ -1343,9 +1400,12 @@ order by ordinal_position
             const note = context.options.note as string | undefined;
             if (note) body.note = note;
 
-            const response = await fetch(url, {
+            const response = await context.fetchImpl(url, {
               method: "POST",
-              headers: { "content-type": "application/json" },
+              headers: compactObject({
+                "content-type": "application/json",
+                "X-Session-Id": sessionId,
+              }) as Record<string, string>,
               body: JSON.stringify(body),
             });
             const text = await response.text();

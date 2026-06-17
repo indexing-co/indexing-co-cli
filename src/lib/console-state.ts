@@ -1,7 +1,15 @@
-const fs = require("node:fs");
 const crypto = require("node:crypto");
 
-import { DEFAULT_CONSOLE_URL, DEFAULT_HTTP_TIMEOUT_MS, DEFAULT_UPDATE_TIMEOUT_MS, getSessionIdPath } from "./constants";
+import { DEFAULT_CONSOLE_URL, DEFAULT_HTTP_TIMEOUT_MS, DEFAULT_UPDATE_TIMEOUT_MS } from "./constants";
+import {
+  assertSafeSessionId,
+  normalizeAgentSource,
+  normalizeConsoleUrl,
+  readActiveConsoleSession,
+  readStoredSessionId,
+  resolveOptionalConsoleSessionContext,
+  writeActiveConsoleSession,
+} from "./console-session";
 import { CliError, EXIT_CODES } from "./errors";
 import { computeKeyFingerprint } from "./key-fingerprint";
 
@@ -28,6 +36,9 @@ export interface ConsoleStateSubscriptionOptions {
   // sent with presence heartbeats. The raw key itself never leaves this
   // process — see src/lib/key-fingerprint.ts.
   apiKey?: string;
+  cwd?: string;
+  env?: Record<string, string | undefined>;
+  cliVersion?: string;
   onEvent: (event: ConsoleStateEvent) => void;
   onTransportError?: (error: Error, context: { attempt: number; reconnectInMs: number }) => void;
   fetchImpl?: typeof fetch;
@@ -73,6 +84,7 @@ export interface AgentActivityReportOptions extends AgentActivityEventInput {
   // attached to the event. Raw key never serialized.
   apiKey?: string;
   env?: Record<string, string | undefined>;
+  cwd?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
 }
@@ -123,34 +135,29 @@ type SharedConnection = {
   subscribers: Map<number, Subscriber>;
   url: string;
   backoffMs: (attempt: number) => number;
+  onPresenceHeartbeat?: () => void;
 };
 
 let nextSubscriberId = 1;
 const sharedConnections = new Map<string, SharedConnection>();
 const PRESENCE_HEARTBEAT_MS = 10_000;
-const DEFAULT_AGENT_SOURCE = "indexing-co-cli";
-const SAFE_AGENT_SOURCE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/;
 const SAFE_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
-const ACTIVITY_SESSION_ID_PATTERN = /^[a-f0-9-]{36}$/i;
 
-function normalizeConsoleUrl(consoleUrl?: string): string {
-  const url = (consoleUrl || process.env.INDEXING_CO_CONSOLE_URL || DEFAULT_CONSOLE_URL).trim();
-  return url.endsWith("/") ? url.slice(0, -1) : url;
-}
-
-function normalizeAgentSource(source?: string): string {
-  const value = (source || process.env.INDEXING_CO_AGENT_SOURCE || DEFAULT_AGENT_SOURCE).trim();
-  return SAFE_AGENT_SOURCE_PATTERN.test(value) ? value : DEFAULT_AGENT_SOURCE;
-}
-
-function assertSafeSessionId(sessionId: string): string {
+function assertCliSafeSessionId(sessionId: string): string {
   if (!SAFE_SESSION_ID_PATTERN.test(sessionId)) {
     throw new CliError(
       "Invalid console session id. Pass the session id shown in the console BYO Agent panel.",
       EXIT_CODES.USAGE,
     );
   }
-  return sessionId;
+  try {
+    return assertSafeSessionId(sessionId);
+  } catch {
+    throw new CliError(
+      "Invalid console session id. Pass the session id shown in the console BYO Agent panel.",
+      EXIT_CODES.USAGE,
+    );
+  }
 }
 
 function buildConsoleUrl(consoleUrl: string, pathName: string): string {
@@ -176,6 +183,7 @@ async function sendPresenceHeartbeat(connection: SharedConnection, signal?: Abor
       }),
       signal,
     });
+    connection.onPresenceHeartbeat?.();
   } catch {
     // Best-effort UI presence: keep streaming even if the heartbeat fails.
   }
@@ -395,46 +403,36 @@ function getConnectionKey(consoleUrl: string, sessionId: string, source: string)
   return `${normalizeConsoleUrl(consoleUrl)}::${sessionId}::${normalizeAgentSource(source)}`;
 }
 
-export function readStoredSessionId(env: Record<string, string | undefined> = process.env): string | undefined {
-  const sessionIdPath = getSessionIdPath(env);
-  try {
-    if (!fs.existsSync(sessionIdPath)) {
-      return undefined;
-    }
-
-    const value = String(fs.readFileSync(sessionIdPath, "utf8")).trim();
-    return value || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 export function resolveConsoleSessionId(
   explicitSessionId: string | undefined,
   env: Record<string, string | undefined> = process.env,
+  cwd?: string,
 ): string {
-  const envSessionId = env.INDEXING_CO_SESSION_ID?.trim();
-  const sessionId = explicitSessionId || envSessionId || readStoredSessionId(env);
+  const activeSession = readActiveConsoleSession({ cwd, env });
+  const sessionId = (
+    explicitSessionId ||
+    env.INDEXING_CO_CONSOLE_SESSION_ID ||
+    env.INDEXING_CO_SESSION_ID ||
+    activeSession?.sessionId ||
+    readStoredSessionId(env)
+  )?.trim();
   if (!sessionId) {
     throw new CliError(
-      "No session id available. Pass --session <id> explicitly (copy from the console's BYO Agent panel) " +
-        "or set the INDEXING_CO_SESSION_ID env var, or place the id at ~/.indexing-co/session-id.",
+      "No session id available. Pass --console-session <id> explicitly (copy from the console's BYO Agent panel), " +
+        "set INDEXING_CO_CONSOLE_SESSION_ID, keep `indexing-co agent watch` running in this project, " +
+        "or place the id at ~/.indexing-co/session-id.",
       EXIT_CODES.USAGE,
     );
   }
-  return assertSafeSessionId(sessionId);
+  return assertCliSafeSessionId(sessionId);
 }
 
 export function resolveOptionalActivitySessionId(
   explicitSessionId: string | undefined,
   env: Record<string, string | undefined> = process.env,
+  cwd?: string,
 ): string | undefined {
-  const envSessionId = env.INDEXING_CO_SESSION_ID?.trim();
-  const sessionId = explicitSessionId || envSessionId || readStoredSessionId(env);
-  if (!sessionId) {
-    return undefined;
-  }
-  return ACTIVITY_SESSION_ID_PATTERN.test(sessionId) ? sessionId : undefined;
+  return resolveOptionalConsoleSessionContext({ explicitSessionId, env, cwd }).sessionId;
 }
 
 export function resolveAgentSource(
@@ -445,7 +443,14 @@ export function resolveAgentSource(
 }
 
 export async function reportAgentActivity(options: AgentActivityReportOptions): Promise<boolean> {
-  const sessionId = resolveOptionalActivitySessionId(options.sessionId, options.env);
+  const sessionContext = resolveOptionalConsoleSessionContext({
+    explicitSessionId: options.sessionId,
+    explicitConsoleUrl: options.consoleUrl,
+    explicitSource: options.source,
+    cwd: options.cwd,
+    env: options.env,
+  });
+  const sessionId = sessionContext.sessionId;
   if (!sessionId) {
     return false;
   }
@@ -453,7 +458,7 @@ export async function reportAgentActivity(options: AgentActivityReportOptions): 
   const fetchImpl = options.fetchImpl || fetch;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs || DEFAULT_UPDATE_TIMEOUT_MS);
-  const source = normalizeAgentSource(options.source || options.env?.INDEXING_CO_AGENT_SOURCE);
+  const source = sessionContext.source;
 
   const data = {
     id: crypto.randomUUID(),
@@ -471,7 +476,7 @@ export async function reportAgentActivity(options: AgentActivityReportOptions): 
   };
 
   try {
-    const response = await fetchImpl(buildConsoleUrl(options.consoleUrl || DEFAULT_CONSOLE_URL, "/api/session/event"), {
+    const response = await fetchImpl(buildConsoleUrl(sessionContext.consoleUrl || DEFAULT_CONSOLE_URL, "/api/session/event"), {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -671,6 +676,18 @@ export function subscribeConsoleState(options: ConsoleStateSubscriptionOptions):
       subscribers: new Map(),
       url: consoleUrl,
       backoffMs: options.backoffMs || defaultBackoffMs,
+      onPresenceHeartbeat: options.cliVersion
+        ? () => {
+            writeActiveConsoleSession({
+              sessionId: options.sessionId,
+              consoleUrl,
+              source,
+              cwd: options.cwd,
+              env: options.env,
+              cliVersion: options.cliVersion as string,
+            });
+          }
+        : undefined,
     };
     sharedConnections.set(key, connection);
   }

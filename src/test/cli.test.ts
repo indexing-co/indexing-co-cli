@@ -345,6 +345,228 @@ test("mutation commands skip activity reporting when no console session is confi
   assert.equal(activityRequests.length, 0);
 });
 
+test("agent watch writes an active session used by later mutation commands", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "ico-home-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ico-cwd-"));
+  const sessionId = "22222222-2222-4222-8222-222222222222";
+  const watchStdout = createWriter();
+  const watchStderr = createWriter();
+
+  const watchExitCode = await runCli(createRootCommand(), [
+    "agent",
+    "watch",
+    "--console-session",
+    sessionId,
+    "--console-url",
+    "https://staging.console.indexing.co",
+    "--source",
+    "codex-cli",
+    "--once",
+  ], {
+    cwd,
+    stdout: watchStdout.stream,
+    stderr: watchStderr.stream,
+    env: { HOME: home },
+    fetchImpl: async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/state/presence")) {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/state/stream")) {
+        assert.equal((init?.headers as Record<string, string>)["X-Session-Id"], sessionId);
+        return createSseResponse(["event: route_change\ndata: {\"route\":\"/pipelines\"}\n\n"], init?.signal as AbortSignal | undefined);
+      }
+      throw new Error(`Unexpected watch request: ${url}`);
+    },
+  });
+
+  assert.equal(watchExitCode, 0);
+  const sessionDir = path.join(home, ".indexing-co", "console-sessions");
+  const sessionFiles = fs.readdirSync(sessionDir);
+  assert.equal(sessionFiles.length, 1);
+  const activeSession = JSON.parse(fs.readFileSync(path.join(sessionDir, sessionFiles[0]), "utf8"));
+  assert.equal(activeSession.sessionId, sessionId);
+  assert.equal(activeSession.consoleUrl, "https://staging.console.indexing.co");
+  assert.equal(activeSession.source, "codex-cli");
+
+  const stdout = createWriter();
+  const stderr = createWriter();
+  const requests: Array<{ url: string; sessionId?: string; body?: unknown }> = [];
+
+  const mutationExitCode = await runCli(createRootCommand(), ["filter", "create", "demo_filter", "--values", "0xabc"], {
+    cwd,
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    env: {
+      HOME: home,
+      INDEXING_CO_API_KEY: "test-key",
+    },
+    fetchImpl: async (input, init) => {
+      const url = String(input);
+      if (url === "https://app.indexing.co/dw/filters/demo_filter") {
+        requests.push({ url, sessionId: (init?.headers as Record<string, string>)["X-Session-Id"] });
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      if (url === "https://staging.console.indexing.co/api/session/event") {
+        requests.push({
+          url,
+          sessionId: (init?.headers as Record<string, string>)["X-Session-Id"],
+          body: JSON.parse(String(init?.body)),
+        });
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      throw new Error(`Unexpected mutation request: ${url}`);
+    },
+  });
+
+  assert.equal(mutationExitCode, 0);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].sessionId, sessionId);
+  assert.equal(requests[1].sessionId, sessionId);
+  const activityData = (requests[1].body as Record<string, unknown>).data as Record<string, unknown>;
+  assert.equal(activityData.type, "create_filter");
+
+  const stateStdout = createWriter();
+  const stateStderr = createWriter();
+  let stateUrl = "";
+  let stateSession = "";
+  const stateExitCode = await runCli(createRootCommand(), ["agent", "state"], {
+    cwd,
+    stdout: stateStdout.stream,
+    stderr: stateStderr.stream,
+    env: { HOME: home },
+    fetchImpl: async (input, init) => {
+      stateUrl = String(input);
+      stateSession = String((init?.headers as Record<string, string>)["X-Session-Id"]);
+      return new Response(JSON.stringify({ route: "/pipelines" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  assert.equal(stateExitCode, 0);
+  assert.equal(stateUrl, "https://staging.console.indexing.co/api/state/current");
+  assert.equal(stateSession, sessionId);
+
+  const hintStdout = createWriter();
+  const hintStderr = createWriter();
+  let hintUrl = "";
+  let hintSession = "";
+  const hintExitCode = await runCli(createRootCommand(), [
+    "hint",
+    "emit",
+    "pipeline-created",
+    "--target-kind",
+    "pipeline",
+    "--target-id",
+    "demo_pipeline",
+  ], {
+    cwd,
+    stdout: hintStdout.stream,
+    stderr: hintStderr.stream,
+    env: { HOME: home },
+    fetchImpl: async (input, init) => {
+      hintUrl = String(input);
+      hintSession = String((init?.headers as Record<string, string>)["X-Session-Id"]);
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  assert.equal(hintExitCode, 0);
+  assert.equal(hintUrl, "https://staging.console.indexing.co/api/hints/emit");
+  assert.equal(hintSession, sessionId);
+});
+
+test("mutation activity sync failure warns without failing the mutation", async () => {
+  const stdout = createWriter();
+  const stderr = createWriter();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "ico-home-"));
+
+  const exitCode = await runCli(createRootCommand(), ["filter", "create", "demo_filter", "--values", "0xabc"], {
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    env: {
+      HOME: home,
+      INDEXING_CO_API_KEY: "test-key",
+      INDEXING_CO_CONSOLE_SESSION_ID: "33333333-3333-4333-8333-333333333333",
+    },
+    fetchImpl: async (input) => {
+      const url = String(input);
+      if (url === "https://app.indexing.co/dw/filters/demo_filter") {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      if (url === "https://console.indexing.co/api/session/event") {
+        return new Response(JSON.stringify({ ok: false }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.match(stderr.read(), /Console activity sync failed/);
+});
+
+test("hint emit sends the resolved console session header", async () => {
+  const stdout = createWriter();
+  const stderr = createWriter();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "ico-home-"));
+  const sessionId = "44444444-4444-4444-8444-444444444444";
+  let observedSession = "";
+
+  const exitCode = await runCli(createRootCommand(), [
+    "hint",
+    "emit",
+    "pipeline-created",
+    "--target-kind",
+    "pipeline",
+    "--target-id",
+    "demo_pipeline",
+    "--note",
+    "done",
+  ], {
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    env: {
+      HOME: home,
+      INDEXING_CO_CONSOLE_SESSION_ID: sessionId,
+    },
+    fetchImpl: async (input, init) => {
+      assert.equal(String(input), "https://console.indexing.co/api/hints/emit");
+      observedSession = String((init?.headers as Record<string, string>)["X-Session-Id"]);
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(observedSession, sessionId);
+});
+
 test("completion command prints a bash script", async () => {
   const stdout = createWriter();
   const stderr = createWriter();
@@ -369,7 +591,7 @@ test("agent state errors clearly when no session id is available", async () => {
   });
 
   assert.equal(exitCode, 2);
-  assert.match(stderr.read(), /No session id available\. Pass --session/);
+  assert.match(stderr.read(), /No session id available\. Pass --console-session/);
 });
 
 test("agent watch prefers explicit session id over the stored file", async () => {
