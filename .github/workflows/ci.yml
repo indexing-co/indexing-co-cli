@@ -7,6 +7,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      HAS_STAGING_INTEGRATION: ${{ secrets.INDEXING_CO_STAGING_API_KEY != '' }}
     strategy:
       matrix:
         node-version: [18, 20, 22]
@@ -16,6 +18,14 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-      - run: npm install
-      - run: npm run typecheck
-      - run: npm test
+      - run: npm ci
+      - run: npm run quality:baseline
+      - run: npm run quality:security
+      - name: Staging integration capability
+        if: ${{ env.HAS_STAGING_INTEGRATION == 'true' }}
+        env:
+          INDEXING_CO_STAGING_API_KEY: ${{ secrets.INDEXING_CO_STAGING_API_KEY }}
+        run: npm run quality:integration
+      - name: Record unavailable staging capability
+        if: ${{ env.HAS_STAGING_INTEGRATION != 'true' }}
+        run: echo "::warning::quality:integration unavailable; INDEXING_CO_STAGING_API_KEY is not configured"

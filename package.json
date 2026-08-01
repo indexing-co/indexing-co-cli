@@ -53,7 +53,11 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "npm run typecheck",
     "test": "npm run build && node --test dist/test/*.test.js",
-    "test:integration": "npm run build && node --test dist/test/integration.test.js"
+    "test:integration": "npm run build && node --test dist/test/integration.test.js",
+    "quality:contract": "node --test scripts/quality-contract.test.mjs",
+    "quality:baseline": "npm run quality:contract && npm run typecheck && npm test",
+    "quality:security": "npm run build && node --test dist/test/cli.test.js dist/test/key-fingerprint.test.js dist/test/key-handoff.test.js",
+    "quality:integration": "node scripts/run-staging-integration.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

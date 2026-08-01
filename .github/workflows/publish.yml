@@ -28,7 +28,9 @@ jobs:
 
       - run: npm ci
 
-      - run: npm test
+      - run: npm run quality:baseline
+      - run: npm run quality:security
+      # Credentialed staging integration remains a CI capability check, not a publish prerequisite.
 
       - name: Check for manual version bump
         id: version-check
