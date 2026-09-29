@@ -19,12 +19,13 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
-      # Trusted publishing (OIDC) requires npm >= 11.5.1
+      # Trusted publishing (OIDC) requires npm >= 11.5.1. Pin the major: npm@latest moved to 12, which
+      # refuses to install on Node 20 and silently failed every publish from 2026-08-01 on.
       - name: Update npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
 
       - run: npm ci
 

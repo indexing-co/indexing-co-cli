@@ -3,7 +3,7 @@ const path = require("node:path");
 
 import { ensureConfigDirectory, promptForApiKey, removeCredentialsFile, writeCredentialsFile } from "../lib/auth";
 import { readActiveConsoleSession } from "../lib/console-session";
-import { DEFAULT_BASE_URL, DEFAULT_CONSOLE_URL } from "../lib/constants";
+import { DEFAULT_BASE_URL, DEFAULT_CONSOLE_URL, getConfigDirectory } from "../lib/constants";
 import {
   getAgentPairingHealth,
   getAgentEventsSnapshot,
@@ -23,6 +23,7 @@ import { computeKeyIdentity } from "../lib/key-fingerprint";
 import { type ApiResponse, type RequestSpec } from "../lib/http";
 import { type CommandDefinition, type CommandContext, getCompletionSuggestions } from "../lib/runtime";
 import { loadState, recordStreamSession } from "../lib/state";
+import { getBundledSkillPath, getClaudeSkillPath, installSkill, SKILL_NAME } from "../lib/skill";
 import { parseSubgraphManifest, summarizeSubgraphManifest } from "../lib/subgraph";
 import { connectWebSocket, SimpleWebSocket } from "../lib/ws";
 import {
@@ -1499,6 +1500,78 @@ order by ordinal_position
         human: { raw: "Use a subcommand: emit.\n" },
         exitCode: 2,
       }),
+    },
+    {
+      name: "mcp",
+      summary: "Run the Indexing Co MCP server on stdio.",
+      description:
+        "Streams live pipeline events into a local SQLite store and exposes pipeline, filter, and transformation tools " +
+        "to MCP clients. Register it with: claude mcp add indexing-co -- npx -y @indexing/cli mcp",
+      requiresAuth: false,
+      options: [
+        { name: "db", description: "SQLite event store path (default ~/.indexing-co/mcp-events.db).", type: "string" },
+        { name: "stream-url", description: "Override the event stream WebSocket URL.", type: "string" },
+      ],
+      examples: ["claude mcp add indexing-co -- npx -y @indexing/cli mcp"],
+      execute: async (context) => {
+        const { startMcpServer } = require("../mcp/server");
+        // INDEXING_API_KEY / INDEXING_BASE_URL / STREAM_URL are the standalone indexing-co-mcp names; keep them working.
+        const hasExplicitBaseUrl = Boolean(context.options.baseUrl || context.env.INDEXING_CO_BASE_URL);
+        const handle = await startMcpServer({
+          apiKey: context.config.apiKey || context.env.INDEXING_API_KEY,
+          baseUrl: hasExplicitBaseUrl ? context.config.baseUrl : context.env.INDEXING_BASE_URL || context.config.baseUrl,
+          streamUrl: context.options.streamUrl ? String(context.options.streamUrl) : context.env.STREAM_URL,
+          dbPath: context.options.db
+            ? resolveFilePath(context.cwd, String(context.options.db))
+            : path.join(getConfigDirectory(context.env), "mcp-events.db"),
+          version: context.config.packageVersion,
+          userAgent: `${context.config.packageName}/${context.config.packageVersion} (mcp)`,
+          stderr: context.stderr,
+          fetchImpl: context.fetchImpl,
+        });
+
+        // stdout is the protocol channel: never return a result for the runtime to print. Exit from here instead.
+        return await new Promise<never>(() => {
+          const shutdown = () => {
+            handle.close().finally(() => process.exit(0));
+          };
+          process.on("SIGINT", shutdown);
+          process.on("SIGTERM", shutdown);
+          context.stdin.on("end", shutdown);
+        });
+      },
+    },
+    {
+      name: "skill",
+      summary: "Install the Indexing Co pipelines skill for Claude Code.",
+      requiresAuth: false,
+      children: [
+        {
+          name: "install",
+          summary: "Copy the bundled skill into ~/.claude/skills (or --dir).",
+          requiresAuth: false,
+          options: [{ name: "dir", description: "Install into this skills directory instead.", type: "string" }],
+          execute: async (context) => {
+            const destination = context.options.dir
+              ? path.join(resolveFilePath(context.cwd, String(context.options.dir)), SKILL_NAME, "SKILL.md")
+              : getClaudeSkillPath(context.env);
+            const result = installSkill(destination);
+            return {
+              data: result,
+              human: { raw: `${result.skill}: ${result.status} at ${result.destination}\n` },
+            };
+          },
+        },
+        {
+          name: "path",
+          summary: "Print the path of the bundled SKILL.md.",
+          requiresAuth: false,
+          execute: async () => ({
+            data: { path: getBundledSkillPath() },
+            human: { raw: `${getBundledSkillPath()}\n` },
+          }),
+        },
+      ],
     },
     {
       name: "__complete",

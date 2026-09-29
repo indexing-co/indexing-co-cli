@@ -1,0 +1,9 @@
+{
+  "name": "indexing-co-pipelines",
+  "version": "1.0.0",
+  "description": "Claude Code skill for building blockchain data pipelines with Indexing Co",
+  "author": {
+    "name": "Indexing Co",
+    "url": "https://indexing.co"
+  }
+}
