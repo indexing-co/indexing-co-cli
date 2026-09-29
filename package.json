@@ -1,7 +1,7 @@
 {
   "name": "@indexing/cli",
-  "version": "0.1.4",
-  "description": "Primary CLI for Indexing Co — manage blockchain data pipelines, filters, transformations, and live event streams from your terminal or AI coding agent.",
+  "version": "0.2.0",
+  "description": "Primary CLI for Indexing Co — manage blockchain data pipelines, filters, transformations, and live event streams from your terminal or AI coding agent. Ships the Indexing Co MCP server and Claude Code skill.",
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -15,14 +15,16 @@
     "url": "https://github.com/indexing-co/indexing-co-cli/issues"
   },
   "keywords": [
-    "blockchain",
-    "data",
-    "pipelines",
-    "indexing",
-    "evm",
-    "ethereum",
     "agents",
-    "cli"
+    "blockchain",
+    "claude",
+    "cli",
+    "data",
+    "ethereum",
+    "evm",
+    "indexing",
+    "mcp",
+    "pipelines"
   ],
   "engines": {
     "node": ">=18"
@@ -35,8 +37,10 @@
     "dist/bin",
     "dist/commands",
     "dist/lib",
+    "dist/mcp",
     "dist/index.js",
     "dist/index.d.ts",
+    "skills",
     "README.md",
     "LICENSE"
   ],
@@ -56,11 +60,15 @@
     "test:integration": "npm run build && node --test dist/test/integration.test.js",
     "quality:contract": "node --test scripts/quality-contract.test.mjs",
     "quality:baseline": "npm run quality:contract && npm run typecheck && npm test",
-    "quality:security": "npm run build && node --test dist/test/cli.test.js dist/test/key-fingerprint.test.js dist/test/key-handoff.test.js",
+    "quality:security": "npm run build && node --test dist/test/cli.test.js dist/test/key-fingerprint.test.js dist/test/key-handoff.test.js dist/test/mcp.test.js",
     "quality:integration": "node scripts/run-staging-integration.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "zod": "3.25.76"
   }
 }

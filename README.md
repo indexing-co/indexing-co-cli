@@ -59,9 +59,31 @@ indexing-co data        describe
 indexing-co subgraph    parse
 indexing-co stablecoin  list
 indexing-co auth        login | status | logout
+indexing-co mcp         (stdio MCP server)
+indexing-co skill       install | path
 ```
 
 Run `indexing-co <command> --help` for usage.
+
+## MCP server
+
+`indexing-co mcp` runs the Indexing Co MCP server on stdio (it replaces the standalone `indexing-co-mcp` repo). It subscribes to DIRECT pipeline channels, stores events in a local SQLite file (`~/.indexing-co/mcp-events.db`), and exposes pipeline, filter, transformation, query and chart tools. It uses the same credentials as the rest of the CLI.
+
+```bash
+claude mcp add indexing-co -- npx -y @indexing/cli mcp
+```
+
+Requires Node.js 22.13+ (the event store uses the built-in `node:sqlite`). The old variable names `INDEXING_API_KEY`, `INDEXING_BASE_URL` and `STREAM_URL` are still honoured.
+
+## Claude Code skill
+
+The `indexing-co-pipelines` skill (formerly the `indexing-co-pipeline-skill` repo) ships inside this package:
+
+```bash
+indexing-co skill install          # -> ~/.claude/skills/indexing-co-pipelines/SKILL.md
+```
+
+This repo is also a Claude Code plugin (`.claude-plugin/plugin.json` + `skills/`), so it can be installed as a plugin directly from GitHub.
 
 ## Output formats
 
